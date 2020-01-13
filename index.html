@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MQTT Websocket client</title>
+	<script>
+	'use strict';
+
+	var socket = null;
+	var timeout_sec = 10;
+	var disconnecting = false;
+	var timer_id;
+	var data_counter = 1;
+
+	function disconnect() {
+		// send a DISCONNECT message
+		var array = [0xE0, 0x00];
+		var bytearray = new Uint8Array(array);
+
+		disconnecting = true;
+		socket.send(bytearray.buffer);
+	}
+
+	function str2array(str) {
+		// convert a string to an Array that can later on be converted easily
+		// to a ByteArray
+		var ar = new Array(str.length + 1);
+		ar[0] = str.length;
+		for (var i=0; i<str.length; i++)
+			ar[i+1] = str.charCodeAt(i);
+		return ar;
+	}
+
+	function array2str(bytearray, begin, len) {
+		// convert a bytearray (start offset begin, len bytes) to a string
+		var str = "";
+		var i;
+
+		for (i=begin; i<begin+len; i++)
+			str += String.fromCharCode(bytearray[i]);
+		return str;
+	}
+
+	function start() {
+		// get the input strings for clientid and topic
+		var the_topic    = document.getElementById("id-topic").value;
+		var the_clientid = document.getElementById("id-client").value;
+
+		// create a new websocket
+		socket = new WebSocket('ws://' + window.location.hostname + ':9001', 'mqtt');
+		socket.binaryType = 'arraybuffer';
+		socket.onopen = function() {
+			// send a CONNECT request
+			var array = [0x10, 0x00, 0x00, 0x06, 0x4d, 0x51, 0x49, 0x73, 0x64, 0x70,
+					0x03, 0x02, 0x00, timeout_sec, 0];
+			array = array.concat(str2array(the_clientid));
+
+			array[1] = array.length - 2;
+			var bytearray = new Uint8Array(array);
+
+			socket.send(bytearray.buffer);
+		};
+
+		socket.onmessage = function(e) {
+			window.clearInterval(timer_id);
+			timer_id = window.setInterval(check, timeout_sec * 1000);
+			data_counter++;
+
+			// convert recevied data to a byte array
+			var bytearray = new Uint8Array(e.data);
+			if (bytearray.length == 4
+				&& bytearray[0] == 0x20
+				&& bytearray[1] == 0x02
+				&& bytearray[2] == 0x00
+				&& bytearray[3] == 0x00)
+			{
+				// CONACK receveid
+				console.log("connect success");
+				document.getElementById("id-status").innerHTML = 'connected!';
+
+				if (the_topic.length > 0) {
+					// send a subscribe message for the given topic
+					var array = [0x82, 0x00, 0x00, 0x01, 0x00];
+					array = array.concat(str2array(the_topic));
+					array = array.concat([0x00]);
+					array[1] = array.length - 2;
+					var bytearray = new Uint8Array(array);
+
+					//console.log(bytearray);
+					socket.send(bytearray.buffer);
+				}
+			}
+			else if (bytearray.length == 2 && bytearray[0] == 0xD0 && bytearray[1] == 0x00)
+			{
+				// PONG message from broker
+				//console.log("pong");
+			}
+			else if (bytearray.length == 5 && bytearray[0] == 0x90)
+			{
+				// subscription acknowledged
+				//console.log("SUBACK");
+			}
+			else if (bytearray.length > 4 && bytearray[0] == 0x30) {
+				// PUBLISH message for subscribed data
+				//console.log("PUBLISH");
+				var packet_len = bytearray[1];
+				var topic_len  = bytearray[3];
+				var value_len  = packet_len - topic_len - 2;
+				if (bytearray.length > packet_len) {
+					// show topic -- message
+					var topic = array2str(bytearray, 4, topic_len);
+					var value = array2str(bytearray, 4+topic_len, value_len);
+
+					console.log(topic, "--", value);
+					var ul = document.getElementById('id-list');
+					if (ul) {
+						if (ul.childElementCount > 10)
+							ul.removeChild(ul.childNodes[0]);
+						var li = document.createElement('li');
+						li.appendChild(document.createTextNode(topic + " -- " + value));
+					    ul.appendChild(li);
+					}
+				}
+			}
+			else {
+				// what kind of message is this?
+				console.log("unsolicited message:", bytearray);
+			}
+		};
+
+		socket.onclose = function() {
+			// connection has been closed
+			console.log('closed!');
+			document.getElementById("id-status").innerHTML = 'Not connected!';
+
+			 // Remove <ul>'s child nodes
+			var ul = document.getElementById("id-list");
+			while (ul.childElementCount > 0) {
+				ul.removeChild(ul.childNodes[0]);
+			}
+
+			//reconnect now
+			data_counter = 1;
+			check();
+		};
+
+		socket.onerror = function() {
+			console.log('error!');
+		};
+	}
+
+	function check() {
+		//console.log("check(data_counter=" + data_counter + ", socket.readyState=" + socket.readyState + ")");
+
+		if (socket && socket.readyState == 1) {
+			window.clearInterval(timer_id);
+			if (data_counter == 0) {
+				// close if no message received since last send
+				// not even a PONG
+				console.log("closing");
+				socket.close();
+			}
+			else {
+				// send a PING
+				timer_id = window.setInterval(check, 1500);
+				var array = [0xC0, 0x00];
+				var bytearray = new Uint8Array(array);
+
+				socket.send(bytearray.buffer);
+			}
+			data_counter = 0;
+		}
+		if ((!socket || socket.readyState == 3) && !disconnecting) {
+			// restart connection
+			start();
+		}
+	}
+
+	document.addEventListener("DOMContentLoaded", function() {
+		// start on page load
+		start();
+		timer_id = window.setInterval(check, 3000);
+	});
+
+	</script>
+</head>
+
+<body>
+<h1>MQTT Websocket client</h1>
+<h3 id="id-status">Not connected</h3>
+<input id="id-client" type="text" value="jsclient" placeholder="client id"/><br />
+<input id="id-topic" type="text" value="" placeholder="topic to subscribe"/><br />
+
+<button onclick="disconnecting=false; start();">Connect</button>
+<button onclick="disconnect();">Disconnect</button>
+<ul id="id-list"></ul>
+</body>
+</html>
