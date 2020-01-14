@@ -8,7 +8,7 @@
 	'use strict';
 
 	var socket = null;
-	var timeout_sec = 10;
+	var timeout_sec = 10; // change this for larger timeouts
 	var disconnecting = false;
 	var timer_id;
 	var data_counter = 1;
@@ -25,10 +25,18 @@
 	function str2array(str) {
 		// convert a string to an Array that can later on be converted easily
 		// to a ByteArray
-		var ar = new Array(str.length + 1);
-		ar[0] = str.length;
-		for (var i=0; i<str.length; i++)
-			ar[i+1] = str.charCodeAt(i);
+		var len = str.length;
+		var ar = new Array(len + 2);
+		if (len >= 256) {
+			ar[0] = Math.floor(len / 256);
+			ar[1] = len % 256;
+		}
+		else {
+			ar[0] = 0;
+			ar[1] = len;
+		}
+		for (var i=0; i<len; i++)
+			ar[i+2] = str.charCodeAt(i);
 		return ar;
 	}
 
@@ -42,23 +50,70 @@
 		return str;
 	}
 
+	function encode_header(code, len) {
+		// encode header with remaining length
+		var ar = new Array(1);
+		
+		ar[0] = code; // mqtt opcode
+
+		do {
+			var digit = len % 128
+			len = Math.floor(len / 128);
+			// if there are more digits to encode, set the top bit of this digit
+			if (len > 0)
+				digit = digit | 0x80
+			ar = ar.concat([digit]);
+		} while (len > 0);
+
+		return ar;
+	}
+
+	function decode_header(ar) {
+		// decode header and return remaining length (=value)
+		var len = 0;
+		var multiplier = 1;
+		var value = 0;
+		do {
+			var digit = ar[++len];
+			value += (digit & 127) * multiplier;
+			multiplier *= 128;
+		} while ((digit & 128) != 0);
+		
+		return [value /* the remaining length */, len /* array len of remaining length */];
+	}
+
 	function start() {
 		// get the input strings for clientid and topic
+		var the_url      = document.getElementById("id-url").value;
 		var the_topic    = document.getElementById("id-topic").value;
 		var the_clientid = document.getElementById("id-client").value;
 
 		// create a new websocket
-		socket = new WebSocket('ws://' + window.location.hostname + ':9001', 'mqtt');
+		socket = new WebSocket(the_url, 'mqtt');
 		socket.binaryType = 'arraybuffer';
 		socket.onopen = function() {
 			// send a CONNECT request
-			var array = [0x10, 0x00, 0x00, 0x06, 0x4d, 0x51, 0x49, 0x73, 0x64, 0x70,
-					0x03, 0x02, 0x00, timeout_sec, 0];
-			array = array.concat(str2array(the_clientid));
+			var payload = [0x00, 0x06, 0x4d, 0x51, 0x49, 0x73, 0x64, 0x70, 0x03, 0x02,
+					Math.floor(timeout_sec / 256), timeout_sec % 256];
+			var array;
 
-			array[1] = array.length - 2;
+			var username = document.getElementById("id-user").value;
+			var password = document.getElementById("id-password").value;
+		
+			payload = payload.concat(str2array(the_clientid));
+
+			if (username.length > 0) {
+				payload[9] |= 0x80;
+				payload = payload.concat(str2array(username));
+			}
+			if (password.length > 0) {
+				payload[9] |= 0x40;
+				payload = payload.concat(str2array(password));
+			}
+
+			array = encode_header(0x10, payload.length);
+			array = array.concat(payload);
 			var bytearray = new Uint8Array(array);
-
 			socket.send(bytearray.buffer);
 		};
 
@@ -67,28 +122,28 @@
 			timer_id = window.setInterval(check, timeout_sec * 1000);
 			data_counter++;
 
-			// convert recevied data to a byte array
+			// convert received data to a byte array
 			var bytearray = new Uint8Array(e.data);
 			if (bytearray.length == 4
-				&& bytearray[0] == 0x20
-				&& bytearray[1] == 0x02
-				&& bytearray[2] == 0x00
-				&& bytearray[3] == 0x00)
-			{
-				// CONACK receveid
-				console.log("connect success");
-				document.getElementById("id-status").innerHTML = 'connected!';
+				&& bytearray[0] == 0x20 && bytearray[1] == 0x02 && bytearray[2] == 0x00) {
+				// CONNACK received
+				if (bytearray[3] == 0) {
+					console.log("connect success");
+					document.getElementById("id-status").innerHTML = 'connected!';
 
-				if (the_topic.length > 0) {
-					// send a subscribe message for the given topic
-					var array = [0x82, 0x00, 0x00, 0x01, 0x00];
-					array = array.concat(str2array(the_topic));
-					array = array.concat([0x00]);
-					array[1] = array.length - 2;
-					var bytearray = new Uint8Array(array);
-
-					//console.log(bytearray);
-					socket.send(bytearray.buffer);
+					if (the_topic.length > 0) {
+						// send a subscribe message for the given topic
+						var array, payload = [0x00, 0x01];
+						payload = payload.concat(str2array(the_topic));
+						payload = payload.concat([0x00]);
+						array = encode_header(0x82, payload.length);
+						array = array.concat(payload);
+						var bytearray = new Uint8Array(array);
+						socket.send(bytearray.buffer);
+					}
+				}
+				else {
+					console.log("connect failed", bytearray[3]);
 				}
 			}
 			else if (bytearray.length == 2 && bytearray[0] == 0xD0 && bytearray[1] == 0x00)
@@ -99,18 +154,22 @@
 			else if (bytearray.length == 5 && bytearray[0] == 0x90)
 			{
 				// subscription acknowledged
-				//console.log("SUBACK");
+				console.log("SUBACK");
 			}
 			else if (bytearray.length > 4 && bytearray[0] == 0x30) {
 				// PUBLISH message for subscribed data
-				//console.log("PUBLISH");
-				var packet_len = bytearray[1];
-				var topic_len  = bytearray[3];
-				var value_len  = packet_len - topic_len - 2;
+				//console.log("PUBLISH", bytearray);
+				
+				var ret = decode_header(bytearray);
+				var packet_len  = ret[0];
+				var payload_idx = ret[1];
+				var topic_len   = bytearray[payload_idx+1] * 256 + bytearray[payload_idx+2];
+				var value_len   = packet_len - topic_len - 2;
+
 				if (bytearray.length > packet_len) {
 					// show topic -- message
-					var topic = array2str(bytearray, 4, topic_len);
-					var value = array2str(bytearray, 4+topic_len, value_len);
+					var topic = array2str(bytearray, payload_idx+3, topic_len);
+					var value = array2str(bytearray, payload_idx+3+topic_len, value_len);
 
 					console.log(topic, "--", value);
 					var ul = document.getElementById('id-list');
@@ -119,7 +178,7 @@
 							ul.removeChild(ul.childNodes[0]);
 						var li = document.createElement('li');
 						li.appendChild(document.createTextNode(topic + " -- " + value));
-					    ul.appendChild(li);
+						ul.appendChild(li);
 					}
 				}
 			}
@@ -177,10 +236,34 @@
 		}
 	}
 
+	function publish() {
+		// publish given topic / value
+		var array, payload;
+		var topic = document.getElementById("id-pubtopic").value;
+		var value = document.getElementById("id-pubvalue").value;
+
+		payload = str2array(value);
+		payload.splice(0, 2); // remove first 2 len bytes
+		payload = str2array(topic).concat(payload);
+
+		array = encode_header(0x30, payload.length);
+		array = array.concat(payload);
+
+		var bytearray = new Uint8Array(array);
+		socket.send(bytearray.buffer);
+	}
+
 	document.addEventListener("DOMContentLoaded", function() {
-		// start on page load
-		start();
-		timer_id = window.setInterval(check, 3000);
+		// start on page load: set default for url
+		var ws_url = "ws";
+		if (location.protocol == "https:")
+			ws_url += "s";
+		ws_url += "://" + location.hostname + ":9001";
+		document.getElementById("id-url").value = ws_url;
+		
+		// uncommented the next to lines for automatic connections on load
+		//start();
+		//timer_id = window.setInterval(check, 3000);
 	});
 
 	</script>
@@ -189,11 +272,19 @@
 <body>
 <h1>MQTT Websocket client</h1>
 <h3 id="id-status">Not connected</h3>
+<input id="id-url" type="text" value="" placeholder="ws url"/><br />
+<input id="id-user" type="text" value="" placeholder="user name"/><br />
+<input id="id-password" type="password" value="" placeholder="password"/><br />
 <input id="id-client" type="text" value="jsclient" placeholder="client id"/><br />
 <input id="id-topic" type="text" value="" placeholder="topic to subscribe"/><br />
 
 <button onclick="disconnecting=false; start();">Connect</button>
 <button onclick="disconnect();">Disconnect</button>
+<br /><br />
+<input id="id-pubtopic" type="text" value="" placeholder="topic to publish"/><br />
+<input id="id-pubvalue" type="text" value="" placeholder="text to publish"/><br />
+<button onclick="publish();">Publish</button>
+
 <ul id="id-list"></ul>
 </body>
 </html>
