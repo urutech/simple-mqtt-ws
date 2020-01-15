@@ -100,15 +100,15 @@
 			var username = document.getElementById("id-user").value;
 			var password = document.getElementById("id-password").value;
 		
-			payload = payload.concat(str2array(the_clientid));
+			payload = payload.concat(str2array(encode_utf8(the_clientid)));
 
 			if (username.length > 0) {
 				payload[9] |= 0x80;
-				payload = payload.concat(str2array(username));
+				payload = payload.concat(str2array(encode_utf8(username)));
 			}
 			if (password.length > 0) {
 				payload[9] |= 0x40;
-				payload = payload.concat(str2array(password));
+				payload = payload.concat(str2array(encode_utf8(password)));
 			}
 
 			array = encode_header(0x10, payload.length);
@@ -134,7 +134,7 @@
 					if (the_topic.length > 0) {
 						// send a subscribe message for the given topic
 						var array, payload = [0x00, 0x01];
-						payload = payload.concat(str2array(the_topic));
+						payload = payload.concat(str2array(encode_utf8(the_topic)));
 						payload = payload.concat([0x00]);
 						array = encode_header(0x82, payload.length);
 						array = array.concat(payload);
@@ -154,7 +154,7 @@
 			else if (bytearray.length == 5 && bytearray[0] == 0x90)
 			{
 				// subscription acknowledged
-				console.log("SUBACK");
+				console.log("SUBACK", bytearray);
 			}
 			else if (bytearray.length > 4 && bytearray[0] == 0x30) {
 				// PUBLISH message for subscribed data
@@ -169,6 +169,7 @@
 				if (bytearray.length > packet_len) {
 					// show topic -- message
 					var topic = array2str(bytearray, payload_idx+3, topic_len);
+					topic = decode_utf8(topic);
 					var value = array2str(bytearray, payload_idx+3+topic_len, value_len);
 
 					console.log(topic, "--", value);
@@ -236,6 +237,14 @@
 		}
 	}
 
+	function encode_utf8(s) {
+		return unescape(encodeURIComponent(s));
+	}
+
+	function decode_utf8(s) {
+		return decodeURIComponent( escape( s ) );
+	}
+
 	function publish() {
 		// publish given topic / value
 		var array, payload;
@@ -244,7 +253,7 @@
 
 		payload = str2array(value);
 		payload.splice(0, 2); // remove first 2 len bytes
-		payload = str2array(topic).concat(payload);
+		payload = str2array(encode_utf8(topic)).concat(payload);
 
 		array = encode_header(0x30, payload.length);
 		array = array.concat(payload);
@@ -261,7 +270,7 @@
 		ws_url += "://" + location.hostname + ":9001";
 		document.getElementById("id-url").value = ws_url;
 		
-		// uncommented the next to lines for automatic connections on load
+		// uncommented the next two lines for automatic connections on load
 		//start();
 		//timer_id = window.setInterval(check, 3000);
 	});
