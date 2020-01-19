@@ -57,11 +57,11 @@
 		ar[0] = code; // mqtt opcode
 
 		do {
-			var digit = len % 128
+			var digit = len % 128;
 			len = Math.floor(len / 128);
 			// if there are more digits to encode, set the top bit of this digit
 			if (len > 0)
-				digit = digit | 0x80
+				digit = digit | 0x80;
 			ar = ar.concat([digit]);
 		} while (len > 0);
 
@@ -156,7 +156,7 @@
 				// subscription acknowledged
 				console.log("SUBACK", bytearray);
 			}
-			else if (bytearray.length > 4 && bytearray[0] == 0x30) {
+			else if (bytearray.length > 4 && (bytearray[0] == 0x30 | bytearray[0] == 0x31)) {
 				// PUBLISH message for subscribed data
 				//console.log("PUBLISH", bytearray);
 				
